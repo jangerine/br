@@ -1,0 +1,134 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>부루마블</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
+<style>
+:root{--s:min(100vw,100dvh)}
+*{box-sizing:border-box;margin:0}
+body{font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;background:#10362d;height:100dvh;overflow:hidden;display:flex;align-items:center;justify-content:center}
+button{font:inherit;border:0;border-radius:.6em;padding:.6em 1em;background:#f2a900;color:#1b1400;font-weight:800;cursor:pointer}
+button:disabled{opacity:.4}
+#lobby{background:#f4f7f2;padding:22px;border-radius:16px;width:min(92vw,380px);text-align:center;display:flex;flex-direction:column;gap:10px}
+#lobby input{font:inherit;padding:10px;border-radius:10px;border:2px solid #b9c5bd;text-align:center;min-width:0;width:100%}
+#lobby .row{display:flex;gap:8px}
+.pl{display:flex;align-items:center;gap:8px;justify-content:center}
+.dot{width:14px;height:14px;border-radius:50%;display:inline-block}
+#board{width:var(--s);height:var(--s);display:none;grid-template:repeat(9,1fr)/repeat(9,1fr);gap:1px;background:#0a241d;padding:1px;font-size:calc(var(--s)/42)}
+.t{background:#f4f7f2;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;overflow:hidden;line-height:1.15;color:#1c2a24}
+.t i{position:absolute;top:0;left:0;right:0;height:.5em}
+.t small{font-size:.85em;color:#55655d}
+.t span{display:flex;gap:1px;position:absolute;bottom:1px}
+.t u{width:1.5em;height:1.5em;border-radius:50%;border:2px solid #fff;display:block}
+#mid{grid-area:2/2/9/9;background:#1b6b50;color:#fff;padding:2%;display:flex;flex-direction:column;font-size:calc(var(--s)/30);overflow:hidden;align-items:center;justify-content:space-between;text-align:center}
+.pcs{display:grid;grid-template-columns:1fr 1fr;gap:4px;width:100%}
+.pc{border-left:6px solid;background:#0a241d;padding:3px 6px;border-radius:6px;text-align:left;font-size:.8em}
+.pc.on{outline:2px solid #ffd54f}.pc.x{opacity:.4;text-decoration:line-through}
+#dice{font-size:2.6em;line-height:1}
+#log{font-size:.65em;opacity:.85;width:100%;text-align:left;max-height:5em;overflow:hidden}
+</style></head><body>
+<div id="lobby"></div><div id="board"></div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=t=>String(t).replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+const P={1:['방콕',5],2:['마닐라',6],3:['타이베이',8],5:['베이징',10],6:['싱가포르',12],7:['카이로',14],9:['이스탄불',16],10:['아테네',18],11:['코펜하겐',20],13:['스톡홀름',22],14:['베를린',24],15:['오타와',26],17:['마드리드',28],18:['로마',30],19:['도쿄',32],21:['파리',34],22:['런던',36],23:['시드니',38],25:['서울',40],26:['뉴욕',42],27:['하와이',44],29:['부산',46],30:['제주',48],31:['LA',50]};
+const SP={0:'출발',4:'🔑',8:'🏝무인도',12:'🔑',16:'복지기금',20:'🔑',24:'🚀우주여행',28:'🔑'};
+const COL=['#e57373','#ffb74d','#fff176','#81c784','#4db6ac','#64b5f6','#9575cd','#f06292'];
+const PC=['#e53935','#1e88e5','#2e9d4a','#fb8c00'];
+const r6=()=>1+Math.random()*6|0;
+const pos=i=>i<=8?[9,9-i]:i<=16?[9-(i-8),1]:i<=24?[1,1+i-16]:[1+i-24,9];
+let s={started:false,players:[],own:{},turn:0,phase:'roll',dice:[0,0],dbl:false,opt:null,fund:0,log:[],win:null};
+let peer,C=[],host=false,me=0,code='',conn,inRoom=false,nm='';
+
+/* ---------- 게임 규칙 (호스트만 실행) ---------- */
+const L=m=>{s.log.push(m);if(s.log.length>30)s.log.shift()};
+const cur=()=>s.players[s.turn];
+function bust(p){p.alive=false;p.money=0;for(const k in s.own)if(s.own[k].o==p.i)delete s.own[k];L(p.name+' 파산!');
+  const a=s.players.filter(x=>x.alive);if(a.length==1){s.win=a[0].i;L(a[0].name+' 승리!')}}
+function pay(p,n,to){if(p.money>=n){p.money-=n;if(to)to.money+=n;else s.fund+=n;return}
+  if(to)to.money+=p.money;else s.fund+=p.money;bust(p)}
+function move(p,n){const np=p.pos+n;if(np>=32){p.money+=20;L(p.name+' 출발 통과 +20만')}p.pos=np%32}
+const K=[
+ ['장학금 +30만',p=>p.money+=30],
+ ['복권 당첨 +20만',p=>p.money+=20],
+ ['병원비 -15만',p=>pay(p,15)],
+ ['과속 벌금 -10만',p=>pay(p,10)],
+ ['무인도로 이동!',p=>{p.pos=8;p.island=3}],
+ ['출발지로 +20만',p=>{p.pos=0;p.money+=20}],
+ ['3칸 앞으로',p=>{move(p,3);land(p)}],
+ ['2칸 뒤로',p=>{p.pos=(p.pos+30)%32;land(p)}],
+ ['생일! 모두에게 5만씩',p=>{s.players.forEach(q=>{if(q.alive&&q!=p)pay(q,5,p)})}]];
+function land(p){const t=p.pos,o=s.own[t];s.opt=null;
+ if(t==0||t==8){}
+ else if(t==16){if(s.fund){L(p.name+' 복지기금 +'+s.fund+'만');p.money+=s.fund;s.fund=0}}
+ else if(t==24){L(p.name+' 우주여행! 출발지로 +20만');p.pos=0;p.money+=20}
+ else if(SP[t]=='🔑'){const e=K[Math.random()*K.length|0];L(p.name+' 🔑 '+e[0]);e[1](p)}
+ else if(!o)s.opt='buy';
+ else if(o.o==p.i){if(o.l<3)s.opt='up'}
+ else{const toll=Math.round(P[t][1]*.4*(1+o.l*1.5)),ow=s.players[o.o];L(`${p.name} → ${ow.name} 통행료 ${toll}만`);pay(p,toll,ow)}
+ if(!p.alive)s.opt=null}
+function endTurn(){const p=cur();s.opt=null;if(s.win!=null)return;
+ if(s.dbl&&p.alive&&!p.island)L(p.name+' 더블! 한 번 더');
+ else{do s.turn=(s.turn+1)%s.players.length;while(!s.players[s.turn].alive)}
+ s.dbl=false;s.phase='roll'}
+function act(i,a){if(!s.started||s.win!=null)return;const p=cur();if(p.i!=i)return;
+ if(a=='roll'&&s.phase=='roll'){const d=[r6(),r6()];s.dice=d;s.dbl=d[0]==d[1];
+  if(p.island>0){if(s.dbl||p.island==1){p.island=0;s.dbl=false;L(p.name+' 무인도 탈출')}
+   else{p.island--;L(p.name+' 무인도 대기 ('+p.island+'턴 남음)');s.phase='act';s.opt=null;return}}
+  move(p,d[0]+d[1]);L(`${p.name} 🎲 ${d[0]}+${d[1]}`);land(p);s.phase='act';if(!p.alive)endTurn()}
+ else if(a=='buy'&&s.phase=='act'&&s.opt=='buy'){const pr=P[p.pos][1];
+  if(p.money>=pr){p.money-=pr;s.own[p.pos]={o:p.i,l:0};L(`${p.name} ${P[p.pos][0]} 구매`);s.opt=null}}
+ else if(a=='up'&&s.phase=='act'&&s.opt=='up'){const c=Math.ceil(P[p.pos][1]/2);
+  if(p.money>=c){p.money-=c;s.own[p.pos].l++;L(`${p.name} ${P[p.pos][0]} 건설`);s.opt=null}}
+ else if(a=='end'&&s.phase=='act')endTurn()}
+function add(n){const k=s.players.length;s.players.push({i:k,name:n,color:PC[k],money:300,pos:0,alive:true,island:0})}
+
+/* ---------- 네트워크 ---------- */
+function bc(){C.forEach((c,i)=>c&&c.open&&c.send({t:'s',s,me:i}));render()}
+function send(a){if(host){act(me,a);bc()}else conn.send({t:'a',a})}
+function ok(){if(typeof Peer=='undefined'){alert('PeerJS를 불러오지 못했어요. 인터넷 연결을 확인하고, 클로드 미리보기 말고 배포한 주소(GitHub Pages 등)에서 열어주세요.');return false}return true}
+function slow(){setTimeout(()=>{if(!inRoom)alert('서버에 연결이 안 돼요. 클로드 앱 미리보기 안에서는 막혀 있어요. 브라우저로 배포한 주소를 열어주세요.')},8000)}
+function mk(){if(!ok())return;nm=esc($('nm').value.trim()||'호스트');host=true;me=0;tryHost();slow()}
+function tryHost(){code=Math.random().toString(36).slice(2,6).toUpperCase();peer=new Peer('bm-'+code);
+ peer.on('open',()=>{s.players=[];C=[null];add(nm);inRoom=true;listen();bc()});
+ peer.on('error',e=>{if(e.type=='unavailable-id'){peer.destroy();tryHost()}else alert('연결 오류: '+e.type)})}
+function listen(){peer.on('connection',c=>{
+ c.on('open',()=>{if(s.started||s.players.length>=4){c.send({t:'full'});setTimeout(()=>c.close(),600);return}
+  add('P'+(s.players.length+1));C.push(c);bc()});
+ c.on('data',m=>{const i=C.indexOf(c);if(i<1)return;
+  if(m.t=='n'){s.players[i].name=esc(String(m.n).slice(0,8))||s.players[i].name;bc()}
+  else if(m.t=='a'){act(i,m.a);bc()}});
+ c.on('close',()=>{const i=C.indexOf(c);if(i<1)return;
+  if(!s.started){s.players.splice(i,1);C.splice(i,1);s.players.forEach((p,k)=>{p.i=k;p.color=PC[k]})}
+  else{const p=s.players[i];if(p.alive){bust(p);if(s.win==null&&cur()==p)endTurn()}C[i]=null}
+  bc()})})}
+function jn(){if(!ok())return;slow();nm=esc($('nm').value.trim()||'게스트');code=$('cd').value.toUpperCase().trim();
+ if(code.length!=4)return alert('방 코드 4자리를 입력하세요');
+ peer=new Peer();
+ peer.on('error',e=>alert('연결 오류: '+e.type+(e.type=='peer-unavailable'?' (방을 찾을 수 없어요)':'')));
+ peer.on('open',()=>{conn=peer.connect('bm-'+code,{serialization:'json'});
+  conn.on('open',()=>{conn.send({t:'n',n:nm});inRoom=true;render()});
+  conn.on('data',m=>{if(m.t=='s'){s=m.s;me=m.me;render()}else if(m.t=='full'){alert('방이 가득 찼거나 이미 시작됐어요');location.reload()}});
+  conn.on('close',()=>{alert('연결이 끊어졌어요');location.reload()})})}
+function go(){if(s.players.length<2)return;s.started=true;s.turn=0;s.phase='roll';L('게임 시작!');bc()}
+
+/* ---------- 화면 ---------- */
+function lobbyHTML(){
+ if(!inRoom)return `<h1>🎲 부루마블</h1><input id="nm" placeholder="내 이름" maxlength="8" value="${nm}"><button onclick="mk()">방 만들기</button><div class="row"><input id="cd" placeholder="방 코드" maxlength="4" style="text-transform:uppercase"><button onclick="jn()">참가</button></div><small>최대 4명 · 방장이 만든 코드를 친구에게 알려주세요</small>`;
+ return `<h2>방 코드: ${code}</h2>${s.players.map(p=>`<div class="pl"><span class="dot" style="background:${p.color}"></span>${p.name}${p.i==me?' (나)':''}</div>`).join('')}${host?`<button onclick="go()" ${s.players.length<2?'disabled':''}>게임 시작 (${s.players.length}/4)</button>`:'<small>방장이 시작하길 기다리는 중…</small>'}`}
+function render(){const Lb=$('lobby'),B=$('board');
+ if(!s.started){B.style.display='none';Lb.style.display='flex';Lb.innerHTML=lobbyHTML();return}
+ Lb.style.display='none';B.style.display='grid';
+ let h='';
+ for(let i=0;i<32;i++){const[r,c]=pos(i),o=s.own[i],tk=s.players.filter(p=>p.alive&&p.pos==i),pr=P[i];
+  h+=`<div class="t" style="grid-area:${r}/${c};${o?`box-shadow:inset 0 0 0 .35em ${s.players[o.o].color}`:''}"><i style="background:${pr?COL[i>>2]:'#bbb'}"></i><b>${pr?pr[0]:SP[i]}</b><small>${pr?(o?['🚩','🏠','🏢','🏨'][o.l]:pr[1]+'만'):''}</small><span>${tk.map(p=>`<u style="background:${p.color};${p.i==s.turn?'border-color:#000':''}"></u>`).join('')}</span></div>`}
+ const p=s.players[s.turn],mine=p.i==me,t=P[p.pos];let btn='';
+ if(s.win!=null)btn=`<h2>🏆 ${s.players[s.win].name} 승리!</h2><button onclick="location.reload()">새 게임</button>`;
+ else if(!mine)btn=`<div>${p.name}님 차례…</div>`;
+ else if(s.phase=='roll')btn=`<button onclick="send('roll')">🎲 ${p.island?'무인도 탈출 시도':'주사위 굴리기'}</button>`;
+ else btn=(s.opt?`<button onclick="send('${s.opt=='buy'?'buy':'up'}')">${s.opt=='buy'?'구매':'건설'} (${s.opt=='buy'?t[1]:Math.ceil(t[1]/2)}만)</button> `:'')+`<button onclick="send('end')" style="background:#dfe6e1">턴 종료</button>`;
+ const D=['','⚀','⚁','⚂','⚃','⚄','⚅'];
+ const pcs=s.players.map(q=>`<div class="pc${q.i==s.turn?' on':''}${q.alive?'':' x'}" style="border-color:${q.color}">${q.name}${q.island?' 🏝':''}${q.i==me?' ★':''}<br>${q.money}만</div>`).join('');
+ h+=`<div id="mid"><div class="pcs">${pcs}</div><div>📍 ${P[p.pos]?P[p.pos][0]:SP[p.pos]} · 기금 ${s.fund}만</div><div id="dice">${D[s.dice[0]]}${D[s.dice[1]]}</div><div>${btn}</div><div id="log">${s.log.slice(-4).map(x=>`<div>${x}</div>`).join('')}</div></div>`;
+ B.innerHTML=h}
+render();
+</script></body></html>
