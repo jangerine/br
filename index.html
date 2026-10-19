@@ -2,6 +2,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>부루마블</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
 :root{--s:min(100vw,100dvh)}
 *{box-sizing:border-box;margin:0}
@@ -25,8 +26,14 @@ button:disabled{opacity:.4}
 .pc.on{outline:2px solid #ffd54f}.pc.x{opacity:.4;text-decoration:line-through}
 #dice{font-size:2.6em;line-height:1}
 #log{font-size:.65em;opacity:.85;width:100%;text-align:left;max-height:5em;overflow:hidden}
+#cv{position:fixed;inset:0;width:100%;height:100%;display:none;touch-action:none}
+#top{position:fixed;top:0;left:0;right:0;display:none;gap:6px;padding:calc(6px + env(safe-area-inset-top)) 6px 0;pointer-events:none;font-size:15px;color:#fff;flex-wrap:wrap;justify-content:center}
+#top .pc{min-width:70px}
+#bot{position:fixed;bottom:0;left:0;right:0;display:none;flex-direction:column;align-items:center;gap:8px;padding:6px 8px calc(12px + env(safe-area-inset-bottom));pointer-events:none;color:#fff;font-size:14px;text-align:center;font-weight:600;text-shadow:0 1px 3px #000}
+#bot button{pointer-events:auto;font-size:17px;text-shadow:none}
+#bot #log{font-size:12px;text-align:center;font-weight:400;max-height:none}
 </style></head><body>
-<div id="lobby"></div><div id="board"></div>
+<div id="lobby"></div><canvas id="cv"></canvas><div id="top"></div><div id="bot"></div>
 <script>
 const $=id=>document.getElementById(id);
 const esc=t=>String(t).replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
@@ -71,7 +78,7 @@ function endTurn(){const p=cur();s.opt=null;if(s.win!=null)return;
  else{do s.turn=(s.turn+1)%s.players.length;while(!s.players[s.turn].alive)}
  s.dbl=false;s.phase='roll'}
 function act(i,a){if(!s.started||s.win!=null)return;const p=cur();if(p.i!=i)return;
- if(a=='roll'&&s.phase=='roll'){const d=[r6(),r6()];s.dice=d;s.dbl=d[0]==d[1];
+ if(a=='roll'&&s.phase=='roll'){const d=[r6(),r6()];s.dice=d;s.rn=(s.rn||0)+1;s.dbl=d[0]==d[1];
   if(p.island>0){if(s.dbl||p.island==1){p.island=0;s.dbl=false;L(p.name+' 무인도 탈출')}
    else{p.island--;L(p.name+' 무인도 대기 ('+p.island+'턴 남음)');s.phase='act';s.opt=null;return}}
   move(p,d[0]+d[1]);L(`${p.name} 🎲 ${d[0]}+${d[1]}`);land(p);s.phase='act';if(!p.alive)endTurn()}
@@ -115,20 +122,78 @@ function go(){if(s.players.length<2)return;s.started=true;s.turn=0;s.phase='roll
 function lobbyHTML(){
  if(!inRoom)return `<h1>🎲 부루마블</h1><input id="nm" placeholder="내 이름" maxlength="8" value="${nm}"><button onclick="mk()">방 만들기</button><div class="row"><input id="cd" placeholder="방 코드" maxlength="4" style="text-transform:uppercase"><button onclick="jn()">참가</button></div><small>최대 4명 · 방장이 만든 코드를 친구에게 알려주세요</small>`;
  return `<h2>방 코드: ${code}</h2>${s.players.map(p=>`<div class="pl"><span class="dot" style="background:${p.color}"></span>${p.name}${p.i==me?' (나)':''}</div>`).join('')}${host?`<button onclick="go()" ${s.players.length<2?'disabled':''}>게임 시작 (${s.players.length}/4)</button>`:'<small>방장이 시작하길 기다리는 중…</small>'}`}
-function render(){const Lb=$('lobby'),B=$('board');
- if(!s.started){B.style.display='none';Lb.style.display='flex';Lb.innerHTML=lobbyHTML();return}
- Lb.style.display='none';B.style.display='grid';
- let h='';
- for(let i=0;i<32;i++){const[r,c]=pos(i),o=s.own[i],tk=s.players.filter(p=>p.alive&&p.pos==i),pr=P[i];
-  h+=`<div class="t" style="grid-area:${r}/${c};${o?`box-shadow:inset 0 0 0 .35em ${s.players[o.o].color}`:''}"><i style="background:${pr?COL[i>>2]:'#bbb'}"></i><b>${pr?pr[0]:SP[i]}</b><small>${pr?(o?['🚩','🏠','🏢','🏨'][o.l]:pr[1]+'만'):''}</small><span>${tk.map(p=>`<u style="background:${p.color};${p.i==s.turn?'border-color:#000':''}"></u>`).join('')}</span></div>`}
+let sc,cam,ren,tl=[],pw=[],dc=[],az=0,pol=.95,zm=1,hold=0,lastRn=-1,rdy=0,rad=14;
+const OF=[[-.33,-.3],[.33,-.3],[-.33,0],[.33,0]];
+const FE={1:[0,0,0],6:[Math.PI,0,0],2:[-Math.PI/2,0,0],5:[Math.PI/2,0,0],3:[0,0,Math.PI/2],4:[0,0,-Math.PI/2]};
+const xz=i=>{const[r,c]=pos(i);return[c-5,r-5]};
+const face=(d,v)=>{d.rotation.set(...FE[v||1]);d.position.y=.45};
+function cvs(w,h){const c=document.createElement('canvas');c.width=w;c.height=h;return c}
+function lbl(i){const t=tl[i],x=t.c.getContext('2d'),pr=P[i];x.fillStyle='#1c2a24';x.textAlign='center';
+ if(pr){const n=pr[0];x.font=`bold ${n.length>3?24:28}px sans-serif`;x.fillText(n,64,92);x.font='bold 22px sans-serif';x.fillText(pr[1]+'만',64,120)}
+ else if(SP[i]=='🔑'){x.font='64px sans-serif';x.fillText('🔑',64,90)}
+ else{const n=SP[i];x.font=`bold ${n.length>4?20:26}px sans-serif`;x.fillText(n,64,72)}
+ t.tx.needsUpdate=true}
+function rs(){const w=innerWidth,h=innerHeight;ren.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix();rad=5.6/(.414*Math.min(cam.aspect,1))}
+function init3d(){const cv=$('cv');
+ ren=new THREE.WebGLRenderer({canvas:cv,antialias:true});ren.setPixelRatio(Math.min(devicePixelRatio,2));
+ sc=new THREE.Scene();sc.background=new THREE.Color(0x10362d);cam=new THREE.PerspectiveCamera(45,1,.1,200);
+ sc.add(new THREE.AmbientLight(0xffffff,.75));const dl=new THREE.DirectionalLight(0xffffff,.7);dl.position.set(-5,12,8);sc.add(dl);
+ const base=new THREE.Mesh(new THREE.BoxGeometry(9.4,.2,9.4),new THREE.MeshLambertMaterial({color:0x1b6b50}));base.position.y=-.1;sc.add(base);
+ const tc=cvs(512,128),tx=tc.getContext('2d');tx.fillStyle='rgba(255,255,255,.3)';tx.font='bold 96px sans-serif';tx.textAlign='center';tx.fillText('부루마블',256,96);
+ const ti=new THREE.Mesh(new THREE.PlaneGeometry(5,1.25),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(tc),transparent:true}));ti.rotation.x=-Math.PI/2;ti.position.set(0,.02,-2.2);sc.add(ti);
+ for(let i=0;i<32;i++){const[x,z]=xz(i),pr=P[i];
+  const m=new THREE.Mesh(new THREE.BoxGeometry(.96,.2,.96),new THREE.MeshLambertMaterial({color:pr?COL[i>>2]:0xcfd8d2}));m.position.set(x,.1,z);sc.add(m);
+  const c=cvs(128,128),t=new THREE.CanvasTexture(c);
+  const p=new THREE.Mesh(new THREE.PlaneGeometry(.92,.92),new THREE.MeshBasicMaterial({map:t,transparent:true}));p.rotation.x=-Math.PI/2;p.position.set(x,.205,z);sc.add(p);
+  const bar=new THREE.Mesh(new THREE.BoxGeometry(.9,.04,.1),new THREE.MeshLambertMaterial({color:0}));bar.position.set(x,.22,z-.42);bar.visible=false;sc.add(bar);
+  const b=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshLambertMaterial({color:0}));b.visible=false;sc.add(b);
+  tl[i]={c,tx:t,bar,b,k:''};lbl(i)}
+ const fm=[3,4,1,6,2,5].map(v=>{const c=cvs(64,64),x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,64,64);x.fillStyle='#222';
+  [[4],[0,8],[0,4,8],[0,2,6,8],[0,2,4,6,8],[0,2,3,5,6,8]][v-1].forEach(k=>{x.beginPath();x.arc(14+k%3*18,14+(k/3|0)*18,6,0,7);x.fill()});
+  return new THREE.MeshLambertMaterial({map:new THREE.CanvasTexture(c)})});
+ for(let k=0;k<2;k++){const d=new THREE.Mesh(new THREE.BoxGeometry(.9,.9,.9),fm);d.position.set(k?1:-1,.45,.8);sc.add(d);dc.push(d)}
+ const pt=new Map();let pd=0;
+ cv.onpointerdown=e=>{cv.setPointerCapture(e.pointerId);pt.set(e.pointerId,[e.clientX,e.clientY])};
+ cv.onpointermove=e=>{const o=pt.get(e.pointerId);if(!o)return;
+  if(pt.size==1){az-=(e.clientX-o[0])*.008;pol=Math.min(1.35,Math.max(.25,pol-(e.clientY-o[1])*.006))}
+  pt.set(e.pointerId,[e.clientX,e.clientY]);
+  if(pt.size==2){const[a,b]=[...pt.values()],d=Math.hypot(a[0]-b[0],a[1]-b[1]);if(pd)zm=Math.min(1.6,Math.max(.45,zm*pd/d));pd=d}};
+ cv.onpointerup=cv.onpointercancel=e=>{pt.delete(e.pointerId);pd=0};
+ cv.onwheel=e=>{zm=Math.min(1.6,Math.max(.45,zm*(1+e.deltaY*.001)))};
+ cv.ondblclick=()=>{az=0;pol=.95;zm=1};
+ rs();addEventListener('resize',rs);loop()}
+function loop(){requestAnimationFrame(loop);const n=performance.now();
+ dc.forEach((d,k)=>{if(d.u&&n<d.u){const p=1-(d.u-n)/900;d.rotation.x+=.35;d.rotation.z+=.27;d.position.y=.45+Math.abs(Math.sin(p*Math.PI*2.5))*1.1*(1-p)}
+  else if(d.u){d.u=0;face(d,s.dice[k])}});
+ pw.forEach((m,i)=>{const pl=s.players[i];if(!pl)return;m.visible=pl.alive;const u=m.userData;
+  if(n>hold&&u.d!=pl.pos&&n>u.nx){const g=(pl.pos-u.d+32)%32;u.d=g<=12?(u.d+1)%32:pl.pos;u.nx=n+170;u.hp=n}
+  const[x,z]=xz(u.d),f=OF[i],hy=.2+(n-u.hp<170?Math.sin((n-u.hp)/170*Math.PI)*.3:0);
+  m.position.x+=(x+f[0]-m.position.x)*.3;m.position.z+=(z+f[1]-m.position.z)*.3;m.position.y+=(hy-m.position.y)*.5;
+  m.scale.setScalar(i==s.turn&&s.win==null?1+.12*Math.sin(n/180):1)});
+ const R=rad*zm;cam.position.set(R*Math.sin(pol)*Math.sin(az),R*Math.cos(pol),R*Math.sin(pol)*Math.cos(az));cam.lookAt(0,0,0);ren.render(sc,cam)}
+function sync(){
+ while(pw.length<s.players.length){const i=pw.length,q=s.players[i],g=new THREE.Group(),m=new THREE.MeshLambertMaterial({color:q.color});
+  const a=new THREE.Mesh(new THREE.CylinderGeometry(.09,.13,.28,16),m),b=new THREE.Mesh(new THREE.SphereGeometry(.12,16,12),m);
+  a.position.y=.14;b.position.y=.38;g.add(a,b);const[x,z]=xz(q.pos);g.position.set(x+OF[i][0],.2,z+OF[i][1]);
+  g.userData={d:q.pos,nx:0,hp:0};sc.add(g);pw.push(g)}
+ for(const k in P){const i=+k,o=s.own[i],t=tl[i],key=o?o.o+':'+o.l:'-';if(t.k===key)continue;t.k=key;t.bar.visible=t.b.visible=!!o;
+  if(o){const c=s.players[o.o].color,S=[[.12,.4,.12],[.34,.3,.34],[.34,.6,.34],[.5,.9,.5]][o.l],[x,z]=xz(i);
+   t.bar.material.color.set(c);t.b.material.color.set(o.l==3?'#ffd54f':c);t.b.scale.set(...S);t.b.position.set(x,.2+S[1]/2,z-.12)}}
+ const n=performance.now();
+ if(lastRn<0)dc.forEach((d,k)=>face(d,s.dice[k]));
+ else if((s.rn||0)!=lastRn){dc.forEach(d=>d.u=n+900);hold=n+1100}
+ lastRn=s.rn||0}
+function render(){const Lb=$('lobby'),vs=['cv','top','bot'];
+ if(!s.started){Lb.style.display='flex';vs.forEach(k=>$(k).style.display='none');Lb.innerHTML=lobbyHTML();return}
+ Lb.style.display='none';$('cv').style.display='block';$('top').style.display='flex';$('bot').style.display='flex';
+ if(!rdy){init3d();rdy=1}
+ sync();
  const p=s.players[s.turn],mine=p.i==me,t=P[p.pos];let btn='';
  if(s.win!=null)btn=`<h2>🏆 ${s.players[s.win].name} 승리!</h2><button onclick="location.reload()">새 게임</button>`;
  else if(!mine)btn=`<div>${p.name}님 차례…</div>`;
  else if(s.phase=='roll')btn=`<button onclick="send('roll')">🎲 ${p.island?'무인도 탈출 시도':'주사위 굴리기'}</button>`;
  else btn=(s.opt?`<button onclick="send('${s.opt=='buy'?'buy':'up'}')">${s.opt=='buy'?'구매':'건설'} (${s.opt=='buy'?t[1]:Math.ceil(t[1]/2)}만)</button> `:'')+`<button onclick="send('end')" style="background:#dfe6e1">턴 종료</button>`;
- const D=['','⚀','⚁','⚂','⚃','⚄','⚅'];
- const pcs=s.players.map(q=>`<div class="pc${q.i==s.turn?' on':''}${q.alive?'':' x'}" style="border-color:${q.color}">${q.name}${q.island?' 🏝':''}${q.i==me?' ★':''}<br>${q.money}만</div>`).join('');
- h+=`<div id="mid"><div class="pcs">${pcs}</div><div>📍 ${P[p.pos]?P[p.pos][0]:SP[p.pos]} · 기금 ${s.fund}만</div><div id="dice">${D[s.dice[0]]}${D[s.dice[1]]}</div><div>${btn}</div><div id="log">${s.log.slice(-4).map(x=>`<div>${x}</div>`).join('')}</div></div>`;
- B.innerHTML=h}
+ $('top').innerHTML=s.players.map(q=>`<div class="pc${q.i==s.turn?' on':''}${q.alive?'':' x'}" style="border-color:${q.color}">${q.name}${q.island?' 🏝':''}${q.i==me?' ★':''}<br>${q.money}만</div>`).join('');
+ $('bot').innerHTML=`<div id="log">${s.log.slice(-3).map(x=>`<div>${x}</div>`).join('')}</div><div>📍 ${P[p.pos]?P[p.pos][0]:SP[p.pos]} · 기금 ${s.fund}만</div><div>${btn}</div>`}
 render();
 </script></body></html>
